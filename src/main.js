@@ -14,6 +14,7 @@ const money = new Intl.NumberFormat("id-ID", {
 });
 
 let currentUser = null;
+let supabaseConnection = clientReady ? "checking" : "missing";
 let accounts = [];
 let lines = [emptyLine(), emptyLine()];
 
@@ -60,24 +61,52 @@ function clearMessage() {
   if (area) area.hidden = true;
 }
 
+function renderConnectionStatus() {
+  const status = document.querySelector("#supabase-status");
+  if (!status) return;
+
+  const labels = {
+    checking: "MEMERIKSA · Supabase",
+    connected: "TERHUBUNG · Supabase",
+    error: "GANGGUAN · Supabase",
+    missing: "BELUM DIATUR · Supabase",
+  };
+  status.textContent = labels[supabaseConnection];
+  status.className = `connection-status connection-status--${supabaseConnection}`;
+}
+
+async function checkSupabaseConnection() {
+  if (!clientReady) {
+    renderConnectionStatus();
+    return;
+  }
+
+  try {
+    const response = await fetch(`${supabaseUrl.replace(/\/+$/, "")}/auth/v1/health`, {
+      headers: { apikey: supabaseAnonKey },
+      signal: AbortSignal.timeout(8000),
+    });
+    supabaseConnection = response.ok ? "connected" : "error";
+  } catch {
+    supabaseConnection = "error";
+  }
+  renderConnectionStatus();
+}
+
 function renderShell() {
   app.innerHTML = `
     <header class="topbar">
-      <a class="brand" href="#" aria-label="Ledger beranda">
-        <span class="brand-mark">L</span>
-        <span>ledger<span class="brand-period">.</span></span>
+      <a class="brand" href="#" aria-label="Voucher kas keluar beranda">
+        <span class="brand-overline">SISTEM INFORMASI AKUNTANSI · GENERAL LEDGER</span>
+        <span class="brand-title">Voucher Kas Keluar</span>
+        <span class="brand-subtitle">(Bukti Kas Keluar)</span>
       </a>
-      <div id="session-area" class="session-area"></div>
+      <div class="header-actions">
+        <span id="supabase-status" class="connection-status"></span>
+        <div id="session-area" class="session-area"></div>
+      </div>
     </header>
     <main class="page">
-      <section class="intro">
-        <p class="eyebrow">SISTEM INFORMASI AKUNTANSI · PURWARUPA</p>
-        <h1>Voucher kas keluar</h1>
-        <p class="intro-copy">
-          Catat transaksi secara berpasangan. Database memvalidasi saldo,
-          mem-posting jurnal, dan menjaga jejak auditnya.
-        </p>
-      </section>
       <section id="notice" class="notice" role="status" aria-live="polite" hidden></section>
       <section id="auth-panel" class="panel auth-panel"></section>
       <section id="workspace" hidden>
@@ -172,6 +201,7 @@ function renderAuth() {
   const sessionArea = document.querySelector("#session-area");
   const authPanel = document.querySelector("#auth-panel");
   const workspace = document.querySelector("#workspace");
+  renderConnectionStatus();
 
   if (currentUser) {
     sessionArea.innerHTML = `
@@ -202,7 +232,12 @@ function renderAuth() {
 
   authPanel.innerHTML = `
     <p class="eyebrow">AKUN SUPABASE AUTH</p>
-    <h2 id="auth-title">Masuk ke workspace</h2>
+    <h2 id="auth-title">Masuk</h2>
+    <p class="auth-description">Login diperlukan agar setiap voucher tercatat dengan identitas pembuatnya sebagai bagian dari jejak audit.</p>
+    <div class="auth-note">
+      <strong>Akses aman untuk pengguna terdaftar</strong>
+      <p>Identitas <code>created_by</code> diambil dari sesi Supabase Auth dan diverifikasi kembali oleh database.</p>
+    </div>
     <form id="auth-form" class="auth-form">
       <label class="field"><span>Email</span><input id="auth-email" type="email" autocomplete="email" required /></label>
       <label class="field"><span>Password</span><input id="auth-password" type="password"
@@ -216,7 +251,7 @@ function renderAuth() {
   document.querySelector("#auth-toggle").addEventListener("click", () => {
     signUpMode = !signUpMode;
     document.querySelector("#auth-title").textContent =
-      signUpMode ? "Buat akun workspace" : "Masuk ke workspace";
+      signUpMode ? "Buat akun" : "Masuk";
     document.querySelector("#auth-submit").textContent =
       signUpMode ? "Daftar" : "Masuk";
     document.querySelector("#auth-toggle").textContent =
@@ -524,6 +559,7 @@ async function reverseVoucher(voucher) {
 function start() {
   renderShell();
   renderAuth();
+  checkSupabaseConnection();
   if (clientReady) {
     supabase.auth.getSession().then(({ data, error }) => {
       if (error) {
