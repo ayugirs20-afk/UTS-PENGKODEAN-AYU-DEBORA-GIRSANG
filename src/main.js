@@ -15,6 +15,7 @@ const money = new Intl.NumberFormat("id-ID", {
 
 let currentUser = null;
 let supabaseConnection = clientReady ? "checking" : "missing";
+let workspaceUserId = null;
 let accounts = [];
 let lines = [emptyLine(), emptyLine()];
 
@@ -46,6 +47,13 @@ function amountInCents(value) {
 
 function formatMoney(cents) {
   return money.format(cents / 100);
+}
+
+function localDateValue(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function showMessage(message, kind = "info") {
@@ -188,7 +196,7 @@ function renderShell() {
       </footer>
     </main>`;
 
-  document.querySelector("#trx-date").value = new Date().toISOString().slice(0, 10);
+  document.querySelector("#trx-date").value = localDateValue();
   document.querySelector("#add-line").addEventListener("click", () => {
     lines.push(emptyLine());
     renderLines();
@@ -213,11 +221,19 @@ function renderAuth() {
     });
     authPanel.hidden = true;
     workspace.hidden = false;
-    loadAccounts();
-    loadHistory();
+    if (workspaceUserId !== currentUser.id) {
+      workspaceUserId = currentUser.id;
+      accounts = [];
+      lines = [emptyLine(), emptyLine()];
+      loadAccounts();
+      loadHistory();
+    }
     return;
   }
 
+  workspaceUserId = null;
+  accounts = [];
+  lines = [emptyLine(), emptyLine()];
   sessionArea.replaceChildren();
   workspace.hidden = true;
   authPanel.hidden = false;
@@ -383,11 +399,14 @@ function updateBalance() {
 }
 
 async function loadAccounts() {
+  const userId = currentUser?.id;
+  if (!userId) return;
   const { data, error } = await supabase
     .from("chart_of_accounts")
     .select("account_id, account_code, account_name, is_cash")
     .eq("is_active", true)
     .order("account_code");
+  if (currentUser?.id !== userId) return;
   if (error) {
     showMessage(`Gagal memuat bagan akun: ${error.message}`, "error");
     return;
@@ -416,7 +435,7 @@ async function submitVoucher(event) {
     if (error) throw error;
     showMessage(`Voucher berhasil diposting. ID jurnal: ${data}`, "success");
     document.querySelector("#voucher-form").reset();
-    document.querySelector("#trx-date").value = new Date().toISOString().slice(0, 10);
+    document.querySelector("#trx-date").value = localDateValue();
     lines = [emptyLine(), emptyLine()];
     renderLines();
     await loadHistory();
@@ -430,12 +449,14 @@ async function submitVoucher(event) {
 async function loadHistory() {
   const tbody = document.querySelector("#voucher-history");
   if (!tbody || !currentUser) return;
+  const userId = currentUser.id;
   tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Memuat voucher…</td></tr>`;
   const { data, error } = await supabase
     .from("journal_headers")
     .select("header_id, reference_no, trx_date, description, posting_status, hash_checksum, reversal_of")
     .order("created_at", { ascending: false })
     .limit(50);
+  if (currentUser?.id !== userId) return;
   if (error) {
     tbody.innerHTML = `<tr><td colspan="6" class="empty-cell">Gagal memuat voucher.</td></tr>`;
     showMessage(`Gagal memuat riwayat: ${error.message}`, "error");
@@ -561,14 +582,6 @@ function start() {
   renderAuth();
   checkSupabaseConnection();
   if (clientReady) {
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) {
-        showMessage(`Gagal memeriksa sesi: ${error.message}`, "error");
-        return;
-      }
-      currentUser = data.session?.user ?? null;
-      renderAuth();
-    });
     supabase.auth.onAuthStateChange((_event, session) => {
       currentUser = session?.user ?? null;
       renderAuth();
