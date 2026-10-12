@@ -71,21 +71,25 @@ Buka alamat yang ditampilkan Vite, biasanya `http://localhost:5173`. Buat akun d
 
 ## Menghubungkan ke GitHub dan deploy
 
-Simpan perubahan di branch `main` repository GitHub yang terhubung:
+Repository menerbitkan aplikasi melalui GitHub Pages dan workflow **Deploy GitHub Pages**. Situs tersedia pada URL proyek GitHub Pages setelah deployment berhasil.
+
+Pastikan **Settings → Pages → Build and deployment → Source** disetel ke **GitHub Actions**. Tambahkan repository variables melalui **Settings → Secrets and variables → Actions → Variables**:
+
+- `VITE_SUPABASE_URL` — URL proyek Supabase.
+- `VITE_SUPABASE_ANON_KEY` — anon/publishable key; key ini dipakai di browser dan bukan `service_role`.
+
+Setelah konfigurasi tersedia, push ke `main` akan membangun dan menerbitkan aplikasi. Status dan alasan kegagalan deployment dapat dilihat pada tab **Actions**.
+
+Simpan perubahan ke branch `main`:
 
 ```powershell
 git status
 git add -A
-git commit -m "Implement Supabase audit trail and reversal"
+git commit -m "Describe the change"
 git push origin main
 ```
 
-Tambahkan repository variables di **Settings → Secrets and variables → Actions → Variables**:
-
-- `VITE_SUPABASE_URL` — URL proyek Supabase.
-- `VITE_SUPABASE_ANON_KEY` — anon/publishable key. Key ini memang dipakai di browser; keamanan tabel tetap bergantung pada RLS dan fungsi RPC.
-
-Aktifkan **Settings → Pages → Build and deployment → Source: GitHub Actions**. Workflow `.github/workflows/deploy-pages.yml` sudah disertakan. Setelah repository memiliki branch `main`, konfigurasi kedua variables di atas, dan sumber GitHub Pages diatur ke GitHub Actions, setiap push ke `main` akan membangun dan menerbitkan aplikasi.
+Workflow `.github/workflows/deploy-pages.yml` memeriksa kedua konfigurasi sebelum build. Jika nilai belum diatur, proses berhenti dengan pesan tentang nama variable yang perlu ditambahkan.
 
 ## Catatan
 

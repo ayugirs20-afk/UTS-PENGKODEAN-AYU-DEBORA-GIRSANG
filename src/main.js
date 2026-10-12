@@ -191,8 +191,8 @@ function renderShell() {
         </section>
       </section>
       <footer class="footer">
-        <span>Ledger Prototype</span>
-        <span>Double-entry · Audit trail · PostgreSQL</span>
+        <span>Sistem Informasi Akuntansi</span>
+        <span>Double-entry · Audit trail · Supabase PostgreSQL</span>
       </footer>
     </main>`;
 
