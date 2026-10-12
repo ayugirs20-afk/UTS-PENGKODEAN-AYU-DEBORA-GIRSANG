@@ -6,7 +6,8 @@ Purwarupa aplikasi web untuk soal UTS: voucher kas keluar terhubung ke Supabase/
 
 - `src/main.js` — antarmuka, autentikasi, validasi live, RPC, riwayat, dan audit.
 - `src/styles.css` — gaya antarmuka responsif.
-- `supabase/migrations/202610120001_accounting_vouchers.sql` — tabel, RLS, trigger, fungsi RPC, seed bagan akun, checksum, dan audit.
+- `supabase/migrations/202610120001_accounting_vouchers.sql` — skema voucher, RLS, trigger, RPC, seed akun, checksum, dan audit append-only.
+- `supabase/tests/audit_trail.sql` — uji transaksi, immutability, checksum, audit log, dan reversal; seluruh data uji di-rollback.
 - `.env.example` — template konfigurasi aplikasi lokal.
 
 ## Prasyarat
@@ -19,7 +20,9 @@ Purwarupa aplikasi web untuk soal UTS: voucher kas keluar terhubung ke Supabase/
 
 1. Buat proyek di Supabase.
 2. Buka **SQL Editor**, jalankan isi file `supabase/migrations/202610120001_accounting_vouchers.sql`.
-3. Pastikan tabel bagan akun awal (`Kas`, `Bank`, `Utang Usaha`, dan contoh beban) muncul pada `chart_of_accounts`.
+   - Migration dapat melengkapi tabel `chart_of_accounts`, `journal_headers`, dan `journal_lines` yang sudah ada, tanpa menghapus tabel persediaan.
+   - Jika ditemukan jurnal lama yang belum memiliki `created_by`, migration berhenti dan meminta pemetaan pemilik sebelum melanjutkan; migration tidak mengarang identitas pemilik.
+3. Pastikan akun awal (`Kas`, `Bank`, `Utang Usaha`, dan contoh beban) muncul pada `chart_of_accounts`, dan fungsi RPC serta trigger audit berhasil dibuat.
 4. Aktifkan **Authentication → Providers → Email**. Untuk demo, atur konfirmasi email sesuai kebijakan proyek; produksi sebaiknya tetap memakai konfirmasi.
 5. Dari **Project Settings → API**, salin **Project URL** dan **anon/publishable key**. Jangan pernah menyalin `service_role` key ke frontend.
 6. Supabase Auth → URL Configuration: masukkan URL lokal `http://localhost:5173` ke Site URL/Redirect URLs. Setelah deploy GitHub Pages, tambahkan URL GitHub Pages sebagai redirect yang diizinkan.
@@ -55,20 +58,26 @@ Buka alamat yang ditampilkan Vite, biasanya `http://localhost:5173`. Buat akun d
 - Pembuatan header, baris, checksum, dan perubahan status `DRAFT` → `POSTED` berjalan atomik di database.
 - RLS membatasi riwayat ke pemilik jurnal. Klien tidak diberi hak langsung untuk menulis/menghapus tabel jurnal.
 - Trigger menolak modifikasi header/baris jurnal yang sudah `POSTED`; koreksi menggunakan RPC `reverse_cash_voucher`.
-- `audit_log` merekam operasi pada header/baris. Aplikasi hanya dapat melihat audit voucher miliknya melalui RPC `get_voucher_audit`.
-- Hash dapat diverifikasi melalui `verify_voucher_checksum`. Hash mendeteksi perubahan data, tetapi bukan perlindungan dari administrator database berhak istimewa.
+- `audit_log` merekam operasi pada header/baris dengan aktor dan waktu server; UPDATE/DELETE ditolak oleh trigger append-only. Aplikasi hanya dapat membaca audit voucher miliknya melalui RPC `get_voucher_audit`.
+- `hash_checksum` menyimpan SHA-256 atas header dan baris, termasuk tautan reversal; `verify_voucher_checksum` menghitung ulang dan membandingkan hash tersebut.
+- Hash dan trigger melindungi alur aplikasi, tetapi bukan jaminan anti-tamper terhadap pemilik database/superuser yang dapat mengubah skema atau menonaktifkan trigger.
+
+## Uji audit trail di Supabase
+
+1. Buat minimal satu akun pada **Authentication → Users**.
+2. Jalankan `supabase/tests/audit_trail.sql` dari SQL Editor dengan role administratif.
+3. Tes membuat voucher seimbang sementara, memverifikasi actor/timestamp, audit log, dan checksum; memastikan UPDATE/DELETE terhadap jurnal `POSTED` dan audit log ditolak; membuat reversal; serta memeriksa bahwa jurnal tidak seimbang ditolak.
+4. Seluruh uji berada di dalam transaksi yang diakhiri `ROLLBACK`, sehingga voucher/jurnal uji tidak tertinggal.
 
 ## Menghubungkan ke GitHub dan deploy
 
-Di folder aplikasi, buat repository kosong di GitHub, lalu:
+Simpan perubahan di branch `main` repository GitHub yang terhubung:
 
 ```powershell
-git init
-git add .
-git commit -m "Build Supabase cash voucher prototype"
-git branch -M main
-git remote add origin https://github.com/USERNAME/REPOSITORY.git
-git push -u origin main
+git status
+git add -A
+git commit -m "Implement Supabase audit trail and reversal"
+git push origin main
 ```
 
 Tambahkan repository variables di **Settings → Secrets and variables → Actions → Variables**:
@@ -80,4 +89,4 @@ Aktifkan **Settings → Pages → Build and deployment → Source: GitHub Action
 
 ## Catatan
 
-Ini purwarupa akademik, bukan sistem produksi. Sebelum pemakaian nyata, tambahkan review hak akses, kebijakan nomor bukti, periode akuntansi, pembatasan besaran input, klasifikasi arus kas, multi-currency, kebijakan pengelolaan kas/setara kas sesuai PSAK, dan pengujian pada proyek Supabase tersendiri. Migration ini belum dieksekusi terhadap proyek Supabase karena kredensial/proyek pengguna tidak tersedia di workspace.
+Ini purwarupa akademik, bukan sistem produksi. Sebelum pemakaian nyata, tambahkan review hak akses, kebijakan nomor bukti, periode akuntansi, pembatasan besaran input, klasifikasi arus kas, multi-currency, dan kebijakan pengelolaan kas/setara kas sesuai PSAK.

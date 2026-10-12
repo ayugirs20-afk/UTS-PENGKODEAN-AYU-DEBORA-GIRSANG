@@ -1,9 +1,11 @@
+BEGIN;
+
 CREATE SCHEMA IF NOT EXISTS extensions;
 CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA extensions;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC, anon, authenticated;
 
-CREATE TABLE public.chart_of_accounts (
+CREATE TABLE IF NOT EXISTS public.chart_of_accounts (
     account_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     account_code VARCHAR(20) NOT NULL UNIQUE,
     account_name VARCHAR(150) NOT NULL,
@@ -15,27 +17,96 @@ CREATE TABLE public.chart_of_accounts (
     is_active BOOLEAN NOT NULL DEFAULT TRUE
 );
 
-CREATE TABLE public.journal_headers (
+ALTER TABLE public.chart_of_accounts
+    ADD COLUMN IF NOT EXISTS is_cash BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE TABLE IF NOT EXISTS public.journal_headers (
     header_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     trx_date DATE NOT NULL,
     reference_no VARCHAR(50) NOT NULL UNIQUE,
     description TEXT NOT NULL,
     posting_status VARCHAR(10) NOT NULL DEFAULT 'DRAFT'
         CHECK (posting_status IN ('DRAFT', 'POSTED')),
-    created_by UUID NOT NULL REFERENCES auth.users (id) ON DELETE RESTRICT,
+    created_by UUID NOT NULL
+        CONSTRAINT fk_journal_headers_created_by
+        REFERENCES auth.users (id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     hash_checksum TEXT,
-    reversal_of BIGINT UNIQUE
-        REFERENCES public.journal_headers (header_id) ON DELETE RESTRICT,
-    CONSTRAINT chk_posted_has_hash
+    reversal_of BIGINT,
+    CONSTRAINT chk_journal_headers_posted_has_hash
         CHECK (posting_status <> 'POSTED' OR hash_checksum IS NOT NULL)
 );
 
-CREATE TABLE public.journal_lines (
+ALTER TABLE public.journal_headers
+    ADD COLUMN IF NOT EXISTS created_by UUID,
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    ADD COLUMN IF NOT EXISTS hash_checksum TEXT,
+    ADD COLUMN IF NOT EXISTS reversal_of BIGINT;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM public.journal_headers
+        WHERE created_by IS NULL
+    ) THEN
+        RAISE EXCEPTION
+            'Jurnal lama ditemukan tanpa created_by; petakan pemilik sebelum migrasi audit';
+    END IF;
+
+    ALTER TABLE public.journal_headers
+        ALTER COLUMN created_by SET NOT NULL;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_headers'::regclass
+          AND conname = 'fk_journal_headers_created_by'
+    ) THEN
+        ALTER TABLE public.journal_headers
+            ADD CONSTRAINT fk_journal_headers_created_by
+            FOREIGN KEY (created_by) REFERENCES auth.users (id) ON DELETE RESTRICT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_headers'::regclass
+          AND conname = 'fk_journal_headers_reversal_of'
+    ) THEN
+        ALTER TABLE public.journal_headers
+            ADD CONSTRAINT fk_journal_headers_reversal_of
+            FOREIGN KEY (reversal_of)
+            REFERENCES public.journal_headers (header_id) ON DELETE RESTRICT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_headers'::regclass
+          AND conname = 'uq_journal_headers_reversal_of'
+    ) THEN
+        ALTER TABLE public.journal_headers
+            ADD CONSTRAINT uq_journal_headers_reversal_of UNIQUE (reversal_of);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_headers'::regclass
+          AND conname = 'chk_journal_headers_posted_has_hash'
+    ) THEN
+        ALTER TABLE public.journal_headers
+            ADD CONSTRAINT chk_journal_headers_posted_has_hash
+            CHECK (posting_status <> 'POSTED' OR hash_checksum IS NOT NULL);
+    END IF;
+END;
+$$;
+
+CREATE TABLE IF NOT EXISTS public.journal_lines (
     line_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     header_id BIGINT NOT NULL
+        CONSTRAINT fk_journal_lines_header
         REFERENCES public.journal_headers (header_id) ON DELETE RESTRICT,
     account_id BIGINT NOT NULL
+        CONSTRAINT fk_journal_lines_account
         REFERENCES public.chart_of_accounts (account_id) ON DELETE RESTRICT,
     debit NUMERIC(18,2) NOT NULL DEFAULT 0,
     credit NUMERIC(18,2) NOT NULL DEFAULT 0,
@@ -45,11 +116,65 @@ CREATE TABLE public.journal_lines (
         CHECK ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0))
 );
 
-CREATE INDEX idx_journal_headers_owner_date
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_lines'::regclass
+          AND conname = 'fk_journal_lines_header'
+    ) THEN
+        ALTER TABLE public.journal_lines
+            ADD CONSTRAINT fk_journal_lines_header
+            FOREIGN KEY (header_id)
+            REFERENCES public.journal_headers (header_id) ON DELETE RESTRICT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_lines'::regclass
+          AND conname = 'fk_journal_lines_account'
+    ) THEN
+        ALTER TABLE public.journal_lines
+            ADD CONSTRAINT fk_journal_lines_account
+            FOREIGN KEY (account_id)
+            REFERENCES public.chart_of_accounts (account_id) ON DELETE RESTRICT;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_lines'::regclass
+          AND conname = 'chk_journal_lines_debit_nonnegative'
+    ) THEN
+        ALTER TABLE public.journal_lines
+            ADD CONSTRAINT chk_journal_lines_debit_nonnegative CHECK (debit >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_lines'::regclass
+          AND conname = 'chk_journal_lines_credit_nonnegative'
+    ) THEN
+        ALTER TABLE public.journal_lines
+            ADD CONSTRAINT chk_journal_lines_credit_nonnegative CHECK (credit >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.journal_lines'::regclass
+          AND conname = 'chk_journal_lines_exactly_one_side'
+    ) THEN
+        ALTER TABLE public.journal_lines
+            ADD CONSTRAINT chk_journal_lines_exactly_one_side
+            CHECK ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0));
+    END IF;
+END;
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_journal_headers_owner_date
     ON public.journal_headers (created_by, trx_date DESC);
-CREATE INDEX idx_journal_lines_header
+CREATE INDEX IF NOT EXISTS idx_journal_lines_header
     ON public.journal_lines (header_id);
-CREATE INDEX idx_journal_lines_account
+CREATE INDEX IF NOT EXISTS idx_journal_lines_account
     ON public.journal_lines (account_id);
 
 INSERT INTO public.chart_of_accounts
@@ -60,9 +185,10 @@ VALUES
     ('2-1100', 'Utang Usaha', 'CREDIT', 'BALANCE_SHEET', FALSE),
     ('5-2100', 'Beban Listrik', 'DEBIT', 'INCOME_STATEMENT', FALSE),
     ('5-2200', 'Beban Perlengkapan', 'DEBIT', 'INCOME_STATEMENT', FALSE)
-ON CONFLICT (account_code) DO NOTHING;
+ON CONFLICT (account_code) DO UPDATE
+SET is_cash = EXCLUDED.is_cash;
 
-CREATE TABLE public.audit_log (
+CREATE TABLE IF NOT EXISTS public.audit_log (
     audit_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     table_name TEXT NOT NULL,
     record_id BIGINT NOT NULL,
@@ -73,8 +199,25 @@ CREATE TABLE public.audit_log (
     changed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE INDEX idx_audit_log_record
+CREATE INDEX IF NOT EXISTS idx_audit_log_record
     ON public.audit_log (table_name, record_id, changed_at DESC);
+
+CREATE OR REPLACE FUNCTION public.fn_prevent_audit_log_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    RAISE EXCEPTION 'Audit log bersifat append-only'
+        USING ERRCODE = '55000';
+    RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_audit_log_append_only ON public.audit_log;
+CREATE TRIGGER trg_audit_log_append_only
+BEFORE UPDATE OR DELETE ON public.audit_log
+FOR EACH ROW EXECUTE FUNCTION public.fn_prevent_audit_log_mutation();
 
 CREATE OR REPLACE FUNCTION public.fn_compute_journal_hash(p_header_id BIGINT)
 RETURNS TEXT
@@ -92,6 +235,7 @@ AS $$
                     'description', h.description,
                     'created_by', h.created_by,
                     'created_at', h.created_at,
+                    'reversal_of', h.reversal_of,
                     'lines', COALESCE((
                         SELECT jsonb_agg(
                             jsonb_build_object(
@@ -180,6 +324,8 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS trg_audit_journal_headers ON public.journal_headers;
+DROP TRIGGER IF EXISTS trg_audit_journal_lines ON public.journal_lines;
 CREATE TRIGGER trg_audit_journal_headers
 AFTER INSERT OR UPDATE OR DELETE ON public.journal_headers
 FOR EACH ROW EXECUTE FUNCTION public.fn_audit_journal_change();
@@ -187,6 +333,11 @@ FOR EACH ROW EXECUTE FUNCTION public.fn_audit_journal_change();
 CREATE TRIGGER trg_audit_journal_lines
 AFTER INSERT OR UPDATE OR DELETE ON public.journal_lines
 FOR EACH ROW EXECUTE FUNCTION public.fn_audit_journal_change();
+
+DROP TRIGGER IF EXISTS trg_guard_posted_header_immutable ON public.journal_headers;
+DROP TRIGGER IF EXISTS trg_guard_journal_lines_draft ON public.journal_lines;
+DROP TRIGGER IF EXISTS trg_immutable_journal_headers ON public.journal_headers;
+DROP TRIGGER IF EXISTS trg_immutable_journal_lines ON public.journal_lines;
 
 CREATE OR REPLACE FUNCTION public.fn_block_posted_journal_changes()
 RETURNS TRIGGER
@@ -219,7 +370,8 @@ BEGIN
                    OR NEW.reference_no IS DISTINCT FROM OLD.reference_no
                    OR NEW.description IS DISTINCT FROM OLD.description
                    OR NEW.reversal_of IS DISTINCT FROM OLD.reversal_of
-                   OR NEW.hash_checksum IS NULL
+                   OR NEW.hash_checksum IS DISTINCT FROM
+                        public.fn_compute_journal_hash(OLD.header_id)
                ) THEN
                 RAISE EXCEPTION
                     'Perubahan DRAFT ke POSTED hanya boleh mengisi status dan checksum'
@@ -411,6 +563,10 @@ BEGIN
     IF NOT FOUND OR v_original.posting_status <> 'POSTED' THEN
         RAISE EXCEPTION 'Jurnal milik pengguna dan berstatus POSTED diperlukan';
     END IF;
+    IF v_original.hash_checksum IS DISTINCT FROM
+       public.fn_compute_journal_hash(v_original.header_id) THEN
+        RAISE EXCEPTION 'Checksum jurnal asal tidak valid; pembalikan ditolak';
+    END IF;
     IF EXISTS (
         SELECT 1 FROM public.journal_headers WHERE reversal_of = p_header_id
     ) THEN
@@ -508,6 +664,13 @@ ALTER TABLE public.journal_headers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.journal_lines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_log ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "authenticated users read active accounts"
+    ON public.chart_of_accounts;
+DROP POLICY IF EXISTS "users read their own journal headers"
+    ON public.journal_headers;
+DROP POLICY IF EXISTS "users read their own journal lines"
+    ON public.journal_lines;
+
 CREATE POLICY "authenticated users read active accounts"
     ON public.chart_of_accounts FOR SELECT TO authenticated
     USING (is_active);
@@ -539,6 +702,7 @@ GRANT SELECT ON public.journal_lines TO authenticated;
 REVOKE ALL ON FUNCTION public.fn_compute_journal_hash(BIGINT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.fn_audit_journal_change() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.fn_block_posted_journal_changes() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.fn_prevent_audit_log_mutation() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.create_cash_voucher(TEXT, DATE, TEXT, JSONB) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.reverse_cash_voucher(BIGINT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.get_voucher_audit(BIGINT) FROM PUBLIC;
@@ -552,3 +716,5 @@ GRANT EXECUTE ON FUNCTION public.get_voucher_audit(BIGINT)
     TO authenticated;
 GRANT EXECUTE ON FUNCTION public.verify_voucher_checksum(BIGINT)
     TO authenticated;
+
+COMMIT;
