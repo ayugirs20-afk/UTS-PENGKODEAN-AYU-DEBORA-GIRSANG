@@ -5,6 +5,8 @@ Purwarupa aplikasi web untuk soal UTS: voucher kas keluar terhubung ke Supabase/
 ## Struktur
 
 - `src/main.js` — antarmuka, autentikasi, validasi live, RPC, riwayat, dan audit.
+- `src/voucher-validation.js` — validasi header dan baris jurnal yang dipakai antarmuka.
+- `tests/voucher-validation.test.js` — uji otomatis validasi voucher di browser.
 - `src/styles.css` — gaya antarmuka responsif.
 - `supabase/migrations/202610120001_accounting_vouchers.sql` — skema voucher, RLS, trigger, RPC, seed akun, checksum, dan audit append-only.
 - `supabase/tests/audit_trail.sql` — uji transaksi, immutability, checksum, audit log, dan reversal; seluruh data uji di-rollback.
@@ -48,11 +50,11 @@ Lalu jalankan:
 npm run dev
 ```
 
-Buka alamat yang ditampilkan Vite, biasanya `http://localhost:5173`. Buat akun dengan email/password, konfirmasi jika diwajibkan proyek, lalu masuk.
+Buka alamat yang ditampilkan Vite, biasanya `http://localhost:5173`. Buat akun dengan email/password, konfirmasi jika diwajibkan proyek, lalu masuk. Tautan konfirmasi diarahkan kembali ke alamat aplikasi yang sedang dibuka; pastikan URL lokal maupun URL GitHub Pages terdaftar dalam Auth **Redirect URLs**.
 
 ## Aturan bisnis dan kontrol
 
-- Browser menghitung total secara live dalam satuan sen, menampilkan selisih, dan menonaktifkan tombol submit sebelum input valid.
+- Browser menghitung total secara live dalam satuan sen, memvalidasi header/akun/nominal dan aturan akun kas, menampilkan selisih, dan menonaktifkan tombol submit sampai voucher valid serta seimbang.
 - Validasi browser bukan kontrol keamanan. RPC `create_cash_voucher` mengulang validasi akun, jumlah baris, debit-kredit seimbang, dan aturan kas keluar di dalam PostgreSQL.
 - Hanya akun kas/bank yang dikreditkan untuk voucher kas keluar. Transfer internal sebaiknya memakai jenis voucher terpisah.
 - Pembuatan header, baris, checksum, dan perubahan status `DRAFT` → `POSTED` berjalan atomik di database.
@@ -61,6 +63,10 @@ Buka alamat yang ditampilkan Vite, biasanya `http://localhost:5173`. Buat akun d
 - `audit_log` merekam operasi pada header/baris dengan aktor dan waktu server; UPDATE/DELETE ditolak oleh trigger append-only. Aplikasi hanya dapat membaca audit voucher miliknya melalui RPC `get_voucher_audit`.
 - `hash_checksum` menyimpan SHA-256 atas header dan baris, termasuk tautan reversal; `verify_voucher_checksum` menghitung ulang dan membandingkan hash tersebut.
 - Hash dan trigger melindungi alur aplikasi, tetapi bukan jaminan anti-tamper terhadap pemilik database/superuser yang dapat mengubah skema atau menonaktifkan trigger.
+
+## Uji validasi browser
+
+Jalankan dari direktori proyek dengan `npm test`. Pengujian meliputi konversi nominal presisi dua desimal, voucher seimbang, selisih debit/kredit, header wajib, baris debit/kredit yang konflik, aturan akun kas keluar, dan akun yang tidak tersedia. Tes ini tidak membuat atau mengirim transaksi ke Supabase.
 
 ## Uji audit trail di Supabase
 

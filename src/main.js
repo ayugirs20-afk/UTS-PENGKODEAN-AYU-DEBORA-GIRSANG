@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import "./styles.css";
+import { amountInCents, validateVoucher } from "./voucher-validation.js";
 
 const app = document.querySelector("#app");
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -31,18 +32,6 @@ function escapeHtml(value) {
     '"': "&quot;",
     "'": "&#39;",
   })[char]);
-}
-
-function amountInCents(value) {
-  if (value === "" || !Number.isFinite(Number(value))) return 0;
-  const amount = Number(value);
-  const cents = Math.round(amount * 100);
-  if (
-    amount < 0
-    || !Number.isSafeInteger(cents)
-    || Math.abs(amount * 100 - cents) > 1e-7
-  ) return -1;
-  return cents;
 }
 
 function formatMoney(cents) {
@@ -201,6 +190,10 @@ function renderShell() {
     lines.push(emptyLine());
     renderLines();
   });
+  for (const selector of ["#reference-no", "#trx-date", "#description"]) {
+    document.querySelector(selector).addEventListener("input", updateBalance);
+    document.querySelector(selector).addEventListener("change", updateBalance);
+  }
   document.querySelector("#voucher-form").addEventListener("submit", submitVoucher);
   document.querySelector("#refresh-history").addEventListener("click", loadHistory);
 }
@@ -282,7 +275,12 @@ function renderAuth() {
     button.disabled = true;
     try {
       if (signUpMode) {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+        const emailRedirectTo = new URL(import.meta.env.BASE_URL, window.location.origin).toString();
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo },
+        });
         if (error) throw error;
         if (!data.session) {
           showMessage("Pendaftaran berhasil. Periksa email untuk konfirmasi akun, lalu masuk.", "success");
@@ -361,41 +359,24 @@ function renderLines() {
 }
 
 function updateBalance() {
-  const debit = lines.reduce((sum, line) => sum + amountInCents(line.debit), 0);
-  const credit = lines.reduce((sum, line) => sum + amountInCents(line.credit), 0);
-  const validLines = lines.length >= 2 && lines.every((line) => {
-    const debitCents = amountInCents(line.debit);
-    const creditCents = amountInCents(line.credit);
-    return line.account_id
-      && debitCents >= 0
-      && creditCents >= 0
-      && ((debitCents > 0) !== (creditCents > 0));
+  const result = validateVoucher({
+    lines,
+    accounts,
+    header: {
+      reference: document.querySelector("#reference-no").value,
+      trxDate: document.querySelector("#trx-date").value,
+      description: document.querySelector("#description").value,
+    },
   });
-  const cashCredit = lines.some((line) => {
-    const account = accounts.find((item) => String(item.account_id) === line.account_id);
-    return account?.is_cash && amountInCents(line.credit) > 0;
-  });
-  const cashDebit = lines.some((line) => {
-    const account = accounts.find((item) => String(item.account_id) === line.account_id);
-    return account?.is_cash && amountInCents(line.debit) > 0;
-  });
-  const balanced = debit > 0 && debit === credit;
-  const valid = validLines && balanced && cashCredit && !cashDebit;
-  const messages = [];
-  if (lines.length < 2) messages.push("Minimal dua baris.");
-  if (!validLines) messages.push("Pilih akun dan isi tepat satu sisi pada tiap baris.");
-  if (lines.some((line) => amountInCents(line.debit) < 0 || amountInCents(line.credit) < 0)) {
-    messages.push("Nominal tidak boleh negatif atau memiliki lebih dari dua angka desimal.");
-  }
-  if (!balanced) messages.push(`Debit/kredit belum seimbang (selisih ${formatMoney(Math.abs(debit - credit))}).`);
-  if (!cashCredit || cashDebit) messages.push("Akun kas/bank wajib dikredit untuk kas keluar.");
 
-  document.querySelector("#total-debit").textContent = formatMoney(debit);
-  document.querySelector("#total-credit").textContent = formatMoney(credit);
+  document.querySelector("#total-debit").textContent = formatMoney(result.debit);
+  document.querySelector("#total-credit").textContent = formatMoney(result.credit);
   const state = document.querySelector("#balance-state");
-  state.textContent = valid ? "Seimbang — siap diposting" : messages.join(" ");
-  state.className = `balance-state ${valid ? "balance-state--ok" : "balance-state--pending"}`;
-  document.querySelector("#submit-voucher").disabled = !valid;
+  state.textContent = result.valid
+    ? "Seimbang — siap diposting"
+    : `${result.state}: ${result.messages.join(" ")}`;
+  state.className = `balance-state ${result.valid ? "balance-state--ok" : "balance-state--pending"}`;
+  document.querySelector("#submit-voucher").disabled = !result.valid;
 }
 
 async function loadAccounts() {
